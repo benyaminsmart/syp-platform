@@ -2,7 +2,10 @@ import os, re, json, requests
 from dotenv import load_dotenv
 from groq import Groq
 
-load_dotenv(dotenv_path="../.env")
+# پیدا کردن فایل .env به صورت ایمن (نسبت به محل خود فایل پایتون)
+dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+load_dotenv(dotenv_path=dotenv_path)
+
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -17,7 +20,6 @@ def generate_creator_profile(platform: str, username: str, display_name: str, ra
     profile_url = f"https://instagram.com{username}" if platform == "instagram" else f"https://youtube.com@{username}"
     prompt = f'Return ONLY raw JSON object (no markdown) for {platform} creator {display_name} (@{username}), bio: "{raw_bio}", followers: {followers}, country: {country}. Keys: "bio_ai" (2-sentence English brand bio), "category" (ONE of: Tech & AI, Lifestyle, Food & Dining, Fitness & Health, Business & Finance, Travel, Beauty & Fashion, Entertainment), "tags" (array of 5 lowercase English keywords), "invite_dm" (short friendly English DM inviting them to claim their free profile on SYP — Rule Your Reach. and get a Verified Badge by sharing a story).'
     
-    # مدل رسمی و جدید Groq برای جایگزینی مدل‌های منسوخ شده
     model_name = "openai/gpt-oss-20b"
     print(f"🤖 Using AI Model: {model_name}")
     

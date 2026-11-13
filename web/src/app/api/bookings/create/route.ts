@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { bookingSchema } from "@/lib/validators";
+import { validateCsrfToken } from "@/lib/csrf";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -11,6 +12,12 @@ const PLATFORM_FEE_PERCENTAGE = 10;
 
 export async function POST(req: Request) {
   try {
+    // 0. بررسی توکن CSRF (جلوگیری از حملات Cross-Site)
+    const csrfToken = req.headers.get("x-csrf-token");
+    if (!csrfToken || !validateCsrfToken(csrfToken)) {
+      return NextResponse.json({ error: "Invalid or missing CSRF token" }, { status: 403 });
+    }
+
     const body = await req.json();
 
     // 1. اعتبارسنجی سختگیرانه با Zod
