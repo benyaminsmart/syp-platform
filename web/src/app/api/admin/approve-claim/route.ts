@@ -1,7 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
-// استفاده از کلید سرویس (فقط در سمت سرور اجرا می‌شود)
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -9,20 +8,30 @@ const supabaseAdmin = createClient(
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { claim_request_id, admin_secret } = body;
-
-    // 1. لایه امنیتی اول: بررسی اینکه درخواست از طرف ادمین است
-    // (در فاز ۶ این را با لاگین ادمین جایگزین می‌کنیم، فعلاً با یک رمز مخفی)
-    if (admin_secret !== process.env.ADMIN_SECRET_KEY) {
-      return NextResponse.json({ error: "Unauthorized: Invalid Admin Key" }, { status: 401 });
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Missing or invalid authorization header" }, { status: 401 });
     }
+    
+    const token = authHeader.split(" ")[1];
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    
+    if (authError || !user) {
+      return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 });
+    }
+
+    const isAdmin = user.app_metadata?.role === "admin" || user.user_metadata?.role === "admin";
+    if (!isAdmin) {
+      return NextResponse.json({ error: "Forbidden: Only admins can perform this action" }, { status: 403 });
+    }
+
+    const body = await req.json();
+    const { claim_request_id } = body;
 
     if (!claim_request_id) {
       return NextResponse.json({ error: "Claim Request ID is required" }, { status: 400 });
     }
 
-    // 2. پیدا کردن اطلاعات درخواست Claim
     const { data: claim, error: claimError } = await supabaseAdmin
       .from("claim_requests")
       .select("*")
@@ -37,7 +46,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "This claim is already processed" }, { status: 400 });
     }
 
-    // 3. آپدیت پروفایل (انتقال مالکیت و تغییر وضعیت به verified)
     const { error: profileError } = await supabaseAdmin
       .from("creators")
       .update({
@@ -48,7 +56,6 @@ export async function POST(req: Request) {
 
     if (profileError) throw profileError;
 
-    // 4. تغییر وضعیت درخواست به approved
     const { error: updateClaimError } = await supabaseAdmin
       .from("claim_requests")
       .update({ status: "approved" })
@@ -56,9 +63,9 @@ export async function POST(req: Request) {
 
     if (updateClaimError) throw updateClaimError;
 
-    return NextResponse.json({ 
-      success: true, 
-      message: "Creator profile successfully claimed and verified." 
+    return NextResponse.json({
+      success: true,
+      message: `Profile verified successfully by admin ${user.email}`
     }, { status: 200 });
 
   } catch (error: any) {

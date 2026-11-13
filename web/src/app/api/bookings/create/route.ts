@@ -1,34 +1,33 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { bookingSchema } from "@/lib/validators";
 
-// استفاده از کلید سرویس برای دور زدن محدودیت‌های RLS در ثبت رزرو
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// درصد کمیسیون پلتفرم (مثلاً 10٪)
 const PLATFORM_FEE_PERCENTAGE = 10;
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { creator_id, package_id, brand_email, brand_name, campaign_brief, budget } = body;
 
-    // 1. اعتبارسنجی ورودی‌ها
-    if (!creator_id || !brand_email || !brand_name || !campaign_brief || !budget) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    // 1. اعتبارسنجی سختگیرانه با Zod
+    const validation = bookingSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json({ 
+        error: "Invalid input data", 
+        details: validation.error.format() 
+      }, { status: 400 });
     }
 
-    const amount = parseFloat(budget);
-    if (isNaN(amount) || amount <= 0) {
-      return NextResponse.json({ error: "Invalid budget amount" }, { status: 400 });
-    }
+    const { creator_id, package_id, brand_email, brand_name, campaign_brief, budget } = validation.data;
 
-    // 2. محاسبه کارمزد پلتفرم و مبلغ نهایی
-    const platform_fee = (amount * PLATFORM_FEE_PERCENTAGE) / 100;
+    // 2. محاسبه کارمزد پلتفرم
+    const platform_fee = (budget * PLATFORM_FEE_PERCENTAGE) / 100;
     
-    // 3. ثبت رزرو در دیتابیس با وضعیت pending_payment
+    // 3. ثبت رزرو در دیتابیس
     const { data, error } = await supabaseAdmin
       .from("bookings")
       .insert({
@@ -37,8 +36,8 @@ export async function POST(req: Request) {
         brand_email,
         brand_name,
         campaign_brief,
-        budget: amount,
-        amount_usd: amount,
+        budget: budget,
+        amount_usd: budget,
         platform_fee_usd: platform_fee,
         status: "pending_payment",
       })
@@ -54,7 +53,6 @@ export async function POST(req: Request) {
     }, { status: 201 });
 
   } catch (error: any) {
-    console.error("Booking API Error:", error);
     return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
   }
 }
