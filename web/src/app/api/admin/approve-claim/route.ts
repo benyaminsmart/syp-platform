@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { logAdminAction } from "@/lib/audit-log";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -10,9 +11,9 @@ export async function POST(req: Request) {
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Missing or invalid authorization header" }, { status: 401 });
+      return NextResponse.json({ error: "Missing authorization header" }, { status: 401 });
     }
-    
+
     const token = authHeader.split(" ")[1];
     const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
     
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
 
     const isAdmin = user.app_metadata?.role === "admin" || user.user_metadata?.role === "admin";
     if (!isAdmin) {
-      return NextResponse.json({ error: "Forbidden: Only admins can perform this action" }, { status: 403 });
+      return NextResponse.json({ error: "Forbidden: Admin access required" }, { status: 403 });
     }
 
     const body = await req.json();
@@ -32,24 +33,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Claim Request ID is required" }, { status: 400 });
     }
 
-    const { data: claim, error: claimError } = await supabaseAdmin
+    // دریافت اطلاعات Claim
+    const { data: claim } = await supabaseAdmin
       .from("claim_requests")
       .select("*")
       .eq("id", claim_request_id)
       .single();
 
-    if (claimError || !claim) {
+    if (!claim) {
       return NextResponse.json({ error: "Claim request not found" }, { status: 404 });
     }
 
     if (claim.status !== "pending") {
-      return NextResponse.json({ error: "This claim is already processed" }, { status: 400 });
+      return NextResponse.json({ error: "Claim already processed" }, { status: 400 });
     }
 
-    // دریافت نسخه فعلی پروفایل
+    // دریافت نسخه پروفایل برای Optimistic Locking
     const { data: profile } = await supabaseAdmin
       .from("creators")
-      .select("version")
+      .select("version, status, owner_user_id")
       .eq("id", claim.creator_id)
       .single();
 
@@ -57,43 +59,51 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Profile not found" }, { status: 404 });
     }
 
-    // آپدیت با شرط نسخه (Optimistic Locking واقعی)
-    const { data: updatedProfile, error: profileError } = await supabaseAdmin
+    // آپدیت با Optimistic Locking
+    const { data: updated, error: updateError } = await supabaseAdmin
       .from("creators")
       .update({
         status: "verified",
         owner_user_id: claim.user_id,
-        version: profile.version + 1, // افزایش دستی نسخه
+        version: profile.version + 1,
       })
       .eq("id", claim.creator_id)
-      .eq("version", profile.version) // شرط: فقط اگر نسخه هنوز همان است
-      .select() // برگرداندن رکورد آپدیت شده
-      .maybeSingle(); // اگر آپدیت نشد، null برمی‌گرداند
+      .eq("version", profile.version)
+      .select()
+      .maybeSingle();
 
-    if (profileError) throw profileError;
+    if (updateError) throw updateError;
 
-    // اگر updatedProfile خالی بود، یعنی نسخه تغییر کرده (تداخل)
-    if (!updatedProfile) {
+    if (!updated) {
       return NextResponse.json({ 
-        error: "Conflict: The profile was modified by another admin. Please refresh and try again." 
+        error: "Conflict: Profile was modified by another admin." 
       }, { status: 409 });
     }
 
-    // تغییر وضعیت درخواست به approved
-    const { error: updateClaimError } = await supabaseAdmin
+    // آپدیت Claim
+    await supabaseAdmin
       .from("claim_requests")
       .update({ status: "approved" })
       .eq("id", claim_request_id);
 
-    if (updateClaimError) throw updateClaimError;
+    // ثبت لاگ حقوقی
+    const ip = req.headers.get("x-forwarded-for") || "unknown";
+    await logAdminAction({
+      adminId: user.id,
+      actionType: "APPROVE_CLAIM",
+      targetTable: "creators",
+      targetId: claim.creator_id,
+      oldData: { status: profile.status, owner_user_id: profile.owner_user_id },
+      newData: { status: "verified", owner_user_id: claim.user_id },
+      ipAddress: ip,
+    });
 
     return NextResponse.json({
       success: true,
-      message: `Profile verified successfully by admin ${user.email}`
+      message: `Profile verified by admin ${user.email}`
     }, { status: 200 });
 
   } catch (error: any) {
-    console.error("Admin Approve API Error:", error);
     return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
   }
 }
