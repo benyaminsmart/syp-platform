@@ -19,43 +19,57 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const validation = bookingSchema.safeParse(body);
+    const idempotencyKey = req.headers.get("x-idempotency-key") || null;
+
+    const validation = bookingSchema.safeParse({ ...body, idempotency_key: idempotencyKey });
     if (!validation.success) {
       return NextResponse.json({ error: "Invalid input data", details: validation.error.format() }, { status: 400 });
     }
 
-    const { creator_id, package_id, brand_email, brand_name, campaign_brief, budget } = validation.data;
+    const { creator_id, package_id, brand_email, brand_name, campaign_brief, budget, idempotency_key } = validation.data;
     const platform_fee = (budget * PLATFORM_FEE_PERCENTAGE) / 100;
 
-    // تمام عملیات دیتابیس درون Circuit Breaker اجرا می‌شود
-    const booking = await withCircuitBreaker("Supabase-DB", async () => {
-      const { data, error } = await supabaseAdmin
-        .from("bookings")
-        .insert({
-          creator_id,
-          package_id: package_id || null,
-          brand_email,
-          brand_name,
-          campaign_brief,
-          budget: budget,
-          amount_usd: budget,
-          platform_fee_usd: platform_fee,
-          status: "pending_payment",
-        })
-        .select()
-        .single();
+    try {
+      const booking = await withCircuitBreaker("Supabase-DB", async () => {
+        const { data, error } = await supabaseAdmin
+          .from("bookings")
+          .insert({
+            creator_id,
+            package_id: package_id || null,
+            brand_email,
+            brand_name,
+            campaign_brief,
+            budget: budget,
+            amount_usd: budget,
+            platform_fee_usd: platform_fee,
+            status: "pending_payment",
+            idempotency_key: idempotency_key,
+          })
+          .select()
+          .single();
 
-      if (error) throw error;
-      return data;
-    });
+        if (error) {
+          if (error.code === "23505") {
+            throw new Error("Duplicate request detected. This booking was already submitted.");
+          }
+          throw error;
+        }
+        return data;
+      });
 
-    return NextResponse.json({ success: true, message: "Booking created successfully", booking }, { status: 201 });
+      return NextResponse.json({ success: true, message: "Booking created successfully", booking }, { status: 201 });
+      
+    } catch (error: any) {
+      if (error.message.includes("Duplicate request")) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      if (error.message.includes("temporarily unavailable")) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
+      }
+      throw error;
+    }
 
   } catch (error: any) {
-    // اگر Circuit Breaker باز بود، خطای 503 برمی‌گردانیم
-    if (error.message.includes("temporarily unavailable")) {
-      return NextResponse.json({ error: error.message }, { status: 503 });
-    }
     return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
   }
 }

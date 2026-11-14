@@ -24,16 +24,22 @@ export async function withCircuitBreaker<T>(
     breakers.set(serviceName, breaker);
     return result;
   } catch (error: any) {
-    // هر خطایی (شامل خطاهای دیتابیس) را به عنوان شکست ثبت می‌کنیم
-    breaker.failures += 1;
-    breaker.lastFailure = now;
-
-    if (breaker.failures >= FAILURE_THRESHOLD) {
-      breaker.state = 'OPEN';
-      console.warn(`⚠️ Circuit Breaker OPENED for ${serviceName}`);
+    // فقط خطاهای واقعی سرویس (مثل قطعی شبکه) را به عنوان شکست بشمار
+    // خطاهای منطقی (مثل Duplicate Key که کد 23505 دارد) نباید باعث قفل شدن شوند
+    const isLogicalError = error.code === "23505" || error.message?.includes("Duplicate request");
+    
+    if (!isLogicalError) {
+      breaker.failures += 1;
+      breaker.lastFailure = now;
+      
+      if (breaker.failures >= FAILURE_THRESHOLD) {
+        breaker.state = 'OPEN';
+        console.warn(`⚠️ Circuit Breaker OPENED for ${serviceName}`);
+      }
+      
+      breakers.set(serviceName, breaker);
     }
     
-    breakers.set(serviceName, breaker);
     throw error;
   }
 }

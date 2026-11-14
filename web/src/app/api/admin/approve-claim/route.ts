@@ -46,16 +46,40 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "This claim is already processed" }, { status: 400 });
     }
 
-    const { error: profileError } = await supabaseAdmin
+    // دریافت نسخه فعلی پروفایل
+    const { data: profile } = await supabaseAdmin
+      .from("creators")
+      .select("version")
+      .eq("id", claim.creator_id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+
+    // آپدیت با شرط نسخه (Optimistic Locking واقعی)
+    const { data: updatedProfile, error: profileError } = await supabaseAdmin
       .from("creators")
       .update({
         status: "verified",
         owner_user_id: claim.user_id,
+        version: profile.version + 1, // افزایش دستی نسخه
       })
-      .eq("id", claim.creator_id);
+      .eq("id", claim.creator_id)
+      .eq("version", profile.version) // شرط: فقط اگر نسخه هنوز همان است
+      .select() // برگرداندن رکورد آپدیت شده
+      .maybeSingle(); // اگر آپدیت نشد، null برمی‌گرداند
 
     if (profileError) throw profileError;
 
+    // اگر updatedProfile خالی بود، یعنی نسخه تغییر کرده (تداخل)
+    if (!updatedProfile) {
+      return NextResponse.json({ 
+        error: "Conflict: The profile was modified by another admin. Please refresh and try again." 
+      }, { status: 409 });
+    }
+
+    // تغییر وضعیت درخواست به approved
     const { error: updateClaimError } = await supabaseAdmin
       .from("claim_requests")
       .update({ status: "approved" })
