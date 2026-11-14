@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { bookingSchema } from "@/lib/validators";
 import { validateCsrfToken } from "@/lib/csrf";
 import { withCircuitBreaker } from "@/lib/circuit-breaker";
+import { withRetry } from "@/lib/retry";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,49 +33,60 @@ export async function POST(req: Request) {
 
     try {
       const booking = await withCircuitBreaker("Supabase-DB", async () => {
-        // 1. ثبت رزرو
-        const { data: bookingData, error: bookingError } = await supabaseAdmin
-          .from("bookings")
-          .insert({
-            creator_id,
-            package_id: package_id || null,
-            brand_email,
-            brand_name,
-            campaign_brief,
-            budget: budget,
-            amount_usd: budget,
-            platform_fee_usd: platform_fee,
-            status: "pending_payment",
-            idempotency_key: idempotency_key,
-          })
-          .select()
-          .single();
+        // اعمال Retry برای عملیات دیتابیس
+        return await withRetry(async () => {
+          // 1. ثبت رزرو
+          const { data: bookingData, error: bookingError } = await supabaseAdmin
+            .from("bookings")
+            .insert({
+              creator_id,
+              package_id: package_id || null,
+              brand_email,
+              brand_name,
+              campaign_brief,
+              budget: budget,
+              amount_usd: budget,
+              platform_fee_usd: platform_fee,
+              status: "pending_payment",
+              idempotency_key: idempotency_key,
+            })
+            .select()
+            .single();
 
-        if (bookingError) {
-          if (bookingError.code === "23505") {
-            throw new Error("Duplicate request detected. This booking was already submitted.");
+          if (bookingError) {
+            // خطای تکراری بودن را Retry نکن
+            if (bookingError.code === "23505") {
+              throw new Error("Duplicate request detected. This booking was already submitted.");
+            }
+            throw bookingError;
           }
-          throw bookingError;
-        }
 
-        // 2. ثبت تراکنش مالی در دفتر کل (Ledger)
-        const { error: txError } = await supabaseAdmin
-          .from("transactions")
-          .insert({
-            booking_id: bookingData.id,
-            creator_id: creator_id,
-            brand_email: brand_email,
-            amount: budget,
-            platform_fee: platform_fee,
-            creator_payout: creator_payout,
-            transaction_type: "payment",
-            status: "pending",
-            description: `Campaign: ${campaign_brief.substring(0, 50)}`,
-          });
+          // 2. ثبت تراکنش مالی
+          const { error: txError } = await supabaseAdmin
+            .from("transactions")
+            .insert({
+              booking_id: bookingData.id,
+              creator_id: creator_id,
+              brand_email: brand_email,
+              amount: budget,
+              platform_fee: platform_fee,
+              creator_payout: creator_payout,
+              transaction_type: "payment",
+              status: "pending",
+              description: `Campaign: ${campaign_brief.substring(0, 50)}`,
+            });
 
-        if (txError) throw txError;
+          if (txError) throw txError;
 
-        return bookingData;
+          return bookingData;
+        }, {
+          maxRetries: 3,
+          baseDelayMs: 1000,
+          shouldRetry: (err) => {
+            // فقط خطاهای شبکه یا 5xx را Retry کن
+            return err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || (err.status >= 500 && err.status < 600);
+          }
+        });
       });
 
       return NextResponse.json({ success: true, message: "Booking created successfully", booking }, { status: 201 });
