@@ -28,10 +28,12 @@ export async function POST(req: Request) {
 
     const { creator_id, package_id, brand_email, brand_name, campaign_brief, budget, idempotency_key } = validation.data;
     const platform_fee = (budget * PLATFORM_FEE_PERCENTAGE) / 100;
+    const creator_payout = budget - platform_fee;
 
     try {
       const booking = await withCircuitBreaker("Supabase-DB", async () => {
-        const { data, error } = await supabaseAdmin
+        // 1. ثبت رزرو
+        const { data: bookingData, error: bookingError } = await supabaseAdmin
           .from("bookings")
           .insert({
             creator_id,
@@ -48,13 +50,31 @@ export async function POST(req: Request) {
           .select()
           .single();
 
-        if (error) {
-          if (error.code === "23505") {
+        if (bookingError) {
+          if (bookingError.code === "23505") {
             throw new Error("Duplicate request detected. This booking was already submitted.");
           }
-          throw error;
+          throw bookingError;
         }
-        return data;
+
+        // 2. ثبت تراکنش مالی در دفتر کل (Ledger)
+        const { error: txError } = await supabaseAdmin
+          .from("transactions")
+          .insert({
+            booking_id: bookingData.id,
+            creator_id: creator_id,
+            brand_email: brand_email,
+            amount: budget,
+            platform_fee: platform_fee,
+            creator_payout: creator_payout,
+            transaction_type: "payment",
+            status: "pending",
+            description: `Campaign: ${campaign_brief.substring(0, 50)}`,
+          });
+
+        if (txError) throw txError;
+
+        return bookingData;
       });
 
       return NextResponse.json({ success: true, message: "Booking created successfully", booking }, { status: 201 });

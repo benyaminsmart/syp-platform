@@ -1,33 +1,56 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { supabase, Creator } from "@/lib/supabase";
+import { useEffect, useState, useCallback } from "react";
+import { Creator } from "@/lib/supabase";
 import { CreatorCard } from "@/components/CreatorCard";
-import { Search, Sparkles } from "lucide-react";
+import { Search, Sparkles, Loader2 } from "lucide-react";
 
 const CATEGORIES = ["All", "Tech & AI", "Lifestyle", "Food & Dining", "Fitness & Health", "Business & Finance", "Travel", "Beauty & Fashion", "Entertainment"];
 
 export default function HomePage() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [platform, setPlatform] = useState("all");
   const [category, setCategory] = useState("All");
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
 
-  useEffect(() => {
-    async function fetchCreators() {
-      setLoading(true);
-      let query = supabase.from("creators").select("*").order("followers_count", { ascending: false }).limit(60);
-      if (platform !== "all") query = query.eq("platform", platform);
-      if (category !== "All") query = query.eq("category", category);
-      if (search.trim()) {
-        query = query.or(`display_name.ilike.%${search}%,username.ilike.%${search}%,bio_ai.ilike.%${search}%,country_code.ilike.%${search}%`);
+  const fetchCreators = useCallback(async (isLoadMore = false) => {
+    if (isLoadMore) setLoadingMore(true);
+    else setLoading(true);
+
+    const params = new URLSearchParams();
+    params.append("limit", "20");
+    if (platform !== "all") params.append("platform", platform);
+    if (category !== "All") params.append("category", category);
+    if (search.trim()) params.append("search", search);
+    if (isLoadMore && nextCursor) params.append("cursor", nextCursor.toString());
+
+    try {
+      const res = await fetch(`/api/creators?${params.toString()}`);
+      const data = await res.json();
+      
+      if (data.success) {
+        if (isLoadMore) {
+          setCreators(prev => [...prev, ...data.creators]);
+        } else {
+          setCreators(data.creators);
+        }
+        setNextCursor(data.nextCursor);
       }
-      const { data } = await query;
-      if (data) setCreators(data);
+    } catch (err) {
+      console.error("Failed to fetch creators", err);
+    } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-    fetchCreators();
+  }, [platform, category, search, nextCursor]);
+
+  // لود اولیه و تغییر فیلترها
+  useEffect(() => {
+    setNextCursor(null); // ریست cursor هنگام تغییر فیلتر
+    fetchCreators(false);
   }, [platform, category, search]);
 
   return (
@@ -91,7 +114,7 @@ export default function HomePage() {
       <section id="creators">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-white">Creator Directory</h2>
-          <span className="text-xs text-cyan-400">{creators.length} Profiles Found</span>
+          <span className="text-xs text-cyan-400">{creators.length} Profiles Loaded</span>
         </div>
 
         {loading ? (
@@ -101,11 +124,26 @@ export default function HomePage() {
             No creators matched your filter. Try clearing search or run the AI engine to add more!
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {creators.map((creator) => (
-              <CreatorCard key={creator.id} creator={creator} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {creators.map((creator) => (
+                <CreatorCard key={creator.id} creator={creator} />
+              ))}
+            </div>
+            
+            {/* دکمه Load More */}
+            {nextCursor && (
+              <div className="text-center mt-8">
+                <button
+                  onClick={() => fetchCreators(true)}
+                  disabled={loadingMore}
+                  className="px-8 py-3 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-bold text-sm hover:bg-cyan-500/20 transition flex items-center justify-center gap-2 mx-auto disabled:opacity-50"
+                >
+                  {loadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : "Load More Creators"}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </section>
     </main>
