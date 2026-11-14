@@ -8,9 +8,9 @@ const supabaseAdmin = createClient(
 
 // نرخ مالیات بر اساس ارز
 const TAX_RATES: Record<string, number> = {
-  AED: 5.00,   // امارات ۵٪
-  USD: 0.00,   // آمریکا (بدون مالیات)
-  EUR: 20.00,  // اروپا ۲۰٪
+  AED: 5.00,
+  USD: 0.00,
+  EUR: 20.00,
 };
 
 export async function POST(req: Request) {
@@ -28,10 +28,14 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { transaction_id, currency = "AED" } = body;
+    const { transaction_id, currency = "AED", invoice_type = "ad_campaign" } = body;
 
     if (!transaction_id) {
       return NextResponse.json({ error: "Missing transaction_id" }, { status: 400 });
+    }
+
+    if (!["ad_campaign", "activation_fee"].includes(invoice_type)) {
+      return NextResponse.json({ error: "Invalid invoice_type" }, { status: 400 });
     }
 
     // دریافت اطلاعات تراکنش
@@ -50,8 +54,8 @@ export async function POST(req: Request) {
     const taxAmount = (tx.amount * taxRate) / 100;
     const totalAmount = tx.amount + taxAmount;
 
-    // تولید شماره فاکتور یکتا (مثلاً INV-2024-0001)
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
+    // تولید شماره فاکتور یکتا
+    const invoiceNumber = `INV-${invoice_type === 'activation_fee' ? 'ACT' : 'AD'}-${Date.now().toString().slice(-6)}`;
 
     // ثبت فاکتور
     const { data: invoice, error } = await supabaseAdmin
@@ -66,8 +70,9 @@ export async function POST(req: Request) {
         total_amount: totalAmount,
         currency,
         tax_rate: taxRate,
+        invoice_type: invoice_type,
         status: "issued",
-        due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // ۳۰ روز مهلت
+        due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       })
       .select()
       .single();
